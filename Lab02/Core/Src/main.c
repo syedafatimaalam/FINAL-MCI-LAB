@@ -21,6 +21,8 @@
 #include <string.h>
 # include "stdarg.h"
 # include "stdio.h"
+#include "stdbool.h"
+#include "math.h"
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
@@ -117,14 +119,9 @@ int main(void)
   //TASK 1
    
 
-    // int x = 42;
-    // int y = 3;
-    // myPrintf("Value of x = %d, y = %d\r\n", x, y);
-
-
-
-
-
+    int x = 42;
+    int y = 3;
+    myPrintf("Value of x = %d, y = %d\r\n", x, y);
 
 
   /* USER CODE END 2 */
@@ -138,23 +135,23 @@ int main(void)
     /* USER CODE BEGIN 3 */
     
     //TASK 0
-    // char name[]="Hello World!\r\n";
-    // HAL_UART_Transmit(&huart2,(uint8_t*)name,strlen(name),1000); 
-    // HAL_Delay(1000);
+    char name[]="Hello World!\r\n";
+    HAL_UART_Transmit(&huart2,(uint8_t*)name,strlen(name),1000); 
+    HAL_Delay(1000);
 
-      //TASK 2
-    // int a=7, b=5;
-    // int LHS = (a + b) * (a + b);
-    // int RHS = a * a + b * b + 2 *a* b;
-    // myPrintf ("Value of a = %d, b = %d\r\n", a,  b);
-    // if (LHS == RHS) {
-    //   myPrintf("The identity holds\r\n");
-    // } else 
-    // {
-    //   myPrintf("The identity does not hold\r\n");
-    // }
-    // HAL_Delay(1000);
-    // }
+      TASK 2
+    int a=7, b=5;
+    int LHS = (a + b) * (a + b);
+    int RHS = a * a + b * b + 2 *a* b;
+    myPrintf ("Value of a = %d, b = %d\r\n", a,  b);
+    if (LHS == RHS) {
+      myPrintf("The identity holds\r\n");
+    } else 
+    {
+      myPrintf("The identity does not hold\r\n");
+    }
+    HAL_Delay(1000);
+    }
 
     //TASK3
   char str[]="Microcontrollers";
@@ -176,10 +173,83 @@ int main(void)
   myPrintf("Encrypted: %s\r\n", encrypted);
 
   myPrintf("Decrypted: %s\r\n", decrypted);
+
+//Task 4
+
+  int arr[4] = {2, 0, 0, 7};               
+  int arr2[4] = {12, 3, 7, 0};       
+  int result[4];                          
+
+  for (int i = 0; i < 2; i++) 
+  {
+    for (int j = 0; j < 2; j++) 
+    {
+      result[i * 2 + j] = 0;
+      for (int k = 0; k < 2; k++) 
+      {
+        result[i * 2 + j] += arr[i * 2 + k] * arr2[k * 2 + j];
+      }
+    }
+  }
+
+  void matrix_print(int rows, int cols, const int *m)
+  {
+    for (int i = 0; i < rows; ++i) 
+    {
+      for (int j = 0; j < cols; ++j) 
+      {
+        myPrintf("%d ", m[i*cols + j]);
+      }
+      myPrintf("\r\n");
+    }
+  }
+
+  myPrintf("Matrix A:\r\n");
+  HAL_Delay(1000);
+  matrix_print(2, 2, arr);
+  HAL_Delay(1000);
+  myPrintf("Matrix B:\r\n");
+    HAL_Delay(1000);
+  matrix_print(2, 2, arr2);
+  HAL_Delay(1000);
+  myPrintf("Result of A x B:\r\n");
+    HAL_Delay(1000);
+  matrix_print(2, 2, result);
+    HAL_Delay(1000);
+
+  //Task 5
+
+  bool isArmstrong(int num)
+  {
+      int number, remainder, result = 0;
+      number = num;
+      
+
+      while (number != 0) 
+      {
+          remainder = number % 10;
+          result += pow(remainder, 3);
+          number /= 10;
+      }
+
+      return (result == num);
+  }
+  myPrintf("Armstrong Numbers between 100 and 999:\r\n");
+    for (int i=100;i<1000;i++) {
+        if (isArmstrong(i)) 
+        {
+            myPrintf("=%d\r\n", i);
+            HAL_Delay(1000); 
+        }
+    }
+  }
+
+
   /* USER CODE END 3 */
   
+  
 
-}
+
 }
 
 /**
