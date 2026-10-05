@@ -64,19 +64,32 @@ UART_HandleTypeDef huart1;
 // uint32_t ic_frequency = 0;
 
 //TASK 3 
-/* USER CODE BEGIN PV */
-uint32_t t_start = 0;
-uint32_t t_end = 0;
-uint32_t captured_ticks = 0;
+
+// uint32_t t_start = 0;
+// uint32_t t_end = 0;
+// uint32_t captured_ticks = 0;
+// float encoder_freq = 0.0f;
+// float motor_rpm = 0.0f;
+// char uart_buf[100];
+
+// #define PPR 330
+// static uint16_t speed_to_ccr(uint8_t speed)
+// {
+//   return (uint16_t)((speed * 1000)/255);
+// }
+
+// TASK 4 
+volatile uint32_t last_capture = 0;
+volatile uint32_t current_capture = 0;
+volatile uint32_t captured_ticks = 0;
+volatile uint8_t new_capture_flag = 0;
+volatile uint8_t first_capture = 1;
+
 float encoder_freq = 0.0f;
 float motor_rpm = 0.0f;
-char uart_buf[100];
 
+char uart_buf[100];
 #define PPR 330
-static uint16_t speed_to_ccr(uint8_t speed)
-{
-  return (uint16_t)((speed * 1000)/255);
-}
 
 /* USER CODE END PV */
 
@@ -165,8 +178,8 @@ int main(void)
   MX_I2C1_Init();
   MX_SPI1_Init();
   MX_TIM2_Init();
-  MX_USB_DEVICE_Init();
   MX_USART1_UART_Init();
+  MX_USB_DEVICE_Init();
   /* USER CODE BEGIN 2 */
 
   //TASK 2
@@ -176,9 +189,13 @@ int main(void)
   HAL_TIM_Base_Start(&htim2);
 
   // Start motor PWM channels
-  HAL_TIM_PWM_Start(&htim2, TIM_CHANNEL_1);
-  HAL_TIM_PWM_Start(&htim2, TIM_CHANNEL_2);
+  // HAL_TIM_PWM_Start(&htim2, TIM_CHANNEL_1);
+  // HAL_TIM_PWM_Start(&htim2, TIM_CHANNEL_2);
   
+
+  // TASK 4
+
+  HAL_TIM_IC_Start_IT(&htim2, TIM_CHANNEL_1);
   /* USER CODE END 2 */
 
   /* Infinite loop */
@@ -217,41 +234,64 @@ int main(void)
     // --- Polling Method using PD8 (External 10k pull-up circuit) ---
     
 
-    while (HAL_GPIO_ReadPin(GPIOD, GPIO_PIN_8) == GPIO_PIN_SET);
-    t_start = __HAL_TIM_GET_COUNTER(&htim2);
+  //   while (HAL_GPIO_ReadPin(GPIOD, GPIO_PIN_8) == GPIO_PIN_SET);
+  //   t_start = __HAL_TIM_GET_COUNTER(&htim2);
 
-    while (HAL_GPIO_ReadPin(GPIOD, GPIO_PIN_8) == GPIO_PIN_RESET);
+  //   while (HAL_GPIO_ReadPin(GPIOD, GPIO_PIN_8) == GPIO_PIN_RESET);
 
   
-    while (HAL_GPIO_ReadPin(GPIOD, GPIO_PIN_8) == GPIO_PIN_SET);
-    t_end = __HAL_TIM_GET_COUNTER(&htim2);
+  //   while (HAL_GPIO_ReadPin(GPIOD, GPIO_PIN_8) == GPIO_PIN_SET);
+  //   t_end = __HAL_TIM_GET_COUNTER(&htim2);
 
-    if (t_end >= t_start) {
-        captured_ticks = t_end - t_start;
-    } else {
-        captured_ticks = (65535 - t_start) + t_end + 1;
-    }
+  //   if (t_end >= t_start) {
+  //       captured_ticks = t_end - t_start;
+  //   } else {
+  //       captured_ticks = (65535 - t_start) + t_end + 1;
+  //   }
 
-    if (captured_ticks > 0) {
-        encoder_freq = 1000000.0f / (float)captured_ticks;
-    } else {
-        encoder_freq = 0.0f;
-    }
+  //   if (captured_ticks > 0) {
+  //       encoder_freq = 1000000.0f / (float)captured_ticks;
+  //   } else {
+  //       encoder_freq = 0.0f;
+  //   }
 
-    motor_rpm = (60.0f * encoder_freq) / (float)PPR;
+  //   motor_rpm = (60.0f * encoder_freq) / (float)PPR;
 
-    int len = snprintf(uart_buf, sizeof(uart_buf), "Freq: %.2f Hz | RPM: %.2f\r\n", encoder_freq, motor_rpm);
-    HAL_UART_Transmit(&huart1, (uint8_t*)uart_buf, len, HAL_MAX_DELAY);
+  //   int len = snprintf(uart_buf, sizeof(uart_buf), "Freq: %.2f Hz | RPM: %.2f\r\n", encoder_freq, motor_rpm);
+  //   HAL_UART_Transmit(&huart1, (uint8_t*)uart_buf, len, HAL_MAX_DELAY);
     
-    HAL_Delay(100);
-  }
+  //   HAL_Delay(100);
+  // }
 
 
+
+  // TASK 4
+  if (new_capture_flag)
+    {
+        new_capture_flag = 0; 
+
+        if (captured_ticks > 0)
+        {
+            encoder_freq = 1000000.0f / (float)captured_ticks;
+            motor_rpm = (60.0f * encoder_freq) / (float)PPR;
+        }
+        else
+        {
+            encoder_freq = 0.0f;
+            motor_rpm = 0.0f;
+        }
+
+        int len = snprintf(uart_buf, sizeof(uart_buf), "Freq: %.2f Hz | RPM: %.2f\r\n", encoder_freq, motor_rpm);
+        HAL_UART_Transmit(&huart1, (uint8_t*)uart_buf, len, HAL_MAX_DELAY);
+    }
+
+    HAL_Delay(100); 
   }
+
 
 
   /* USER CODE END 3 */
-
+}
 
 /**
   * @brief System Clock Configuration
@@ -319,7 +359,7 @@ static void MX_I2C1_Init(void)
 
   /* USER CODE END I2C1_Init 1 */
   hi2c1.Instance = I2C1;
-  hi2c1.Init.Timing = 0x00201D2B;
+  hi2c1.Init.Timing = 0x2000090E;
   hi2c1.Init.OwnAddress1 = 0;
   hi2c1.Init.AddressingMode = I2C_ADDRESSINGMODE_7BIT;
   hi2c1.Init.DualAddressMode = I2C_DUALADDRESS_DISABLE;
@@ -385,11 +425,14 @@ static void MX_SPI1_Init(void)
   {
     Error_Handler();
   }
+}
+
+
   /* USER CODE BEGIN SPI1_Init 2 */
 
   /* USER CODE END SPI1_Init 2 */
 
-}
+
 
 /**
   * @brief TIM2 Initialization Function
@@ -405,6 +448,7 @@ static void MX_TIM2_Init(void)
 
   TIM_ClockConfigTypeDef sClockSourceConfig = {0};
   TIM_MasterConfigTypeDef sMasterConfig = {0};
+  TIM_IC_InitTypeDef sConfigIC = {0};
 
   /* USER CODE BEGIN TIM2_Init 1 */
 
@@ -424,9 +468,21 @@ static void MX_TIM2_Init(void)
   {
     Error_Handler();
   }
+  if (HAL_TIM_IC_Init(&htim2) != HAL_OK)
+  {
+    Error_Handler();
+  }
   sMasterConfig.MasterOutputTrigger = TIM_TRGO_RESET;
   sMasterConfig.MasterSlaveMode = TIM_MASTERSLAVEMODE_DISABLE;
   if (HAL_TIMEx_MasterConfigSynchronization(&htim2, &sMasterConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  sConfigIC.ICPolarity = TIM_INPUTCHANNELPOLARITY_RISING;
+  sConfigIC.ICSelection = TIM_ICSELECTION_DIRECTTI;
+  sConfigIC.ICPrescaler = TIM_ICPSC_DIV1;
+  sConfigIC.ICFilter = 0;
+  if (HAL_TIM_IC_ConfigChannel(&htim2, &sConfigIC, TIM_CHANNEL_1) != HAL_OK)
   {
     Error_Handler();
   }
@@ -488,7 +544,6 @@ static void MX_GPIO_Init(void)
   __HAL_RCC_GPIOC_CLK_ENABLE();
   __HAL_RCC_GPIOF_CLK_ENABLE();
   __HAL_RCC_GPIOA_CLK_ENABLE();
-  __HAL_RCC_GPIOD_CLK_ENABLE();
   __HAL_RCC_GPIOB_CLK_ENABLE();
 
   /*Configure GPIO pin Output Level */
@@ -496,8 +551,10 @@ static void MX_GPIO_Init(void)
                           |LD7_Pin|LD9_Pin|LD10_Pin|LD8_Pin
                           |LD6_Pin, GPIO_PIN_RESET);
 
-  /*Configure GPIO pins : DRDY_Pin MEMS_INT3_Pin MEMS_INT4_Pin MEMS_INT2_Pin */
-  GPIO_InitStruct.Pin = DRDY_Pin|MEMS_INT3_Pin|MEMS_INT4_Pin|MEMS_INT2_Pin;
+  /*Configure GPIO pins : DRDY_Pin MEMS_INT3_Pin MEMS_INT4_Pin MEMS_INT1_Pin
+                           MEMS_INT2_Pin */
+  GPIO_InitStruct.Pin = DRDY_Pin|MEMS_INT3_Pin|MEMS_INT4_Pin|MEMS_INT1_Pin
+                          |MEMS_INT2_Pin;
   GPIO_InitStruct.Mode = GPIO_MODE_EVT_RISING;
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   HAL_GPIO_Init(GPIOE, &GPIO_InitStruct);
@@ -513,11 +570,11 @@ static void MX_GPIO_Init(void)
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
   HAL_GPIO_Init(GPIOE, &GPIO_InitStruct);
 
-  /*Configure GPIO pin : PD8 */
-  GPIO_InitStruct.Pin = GPIO_PIN_8;
+  /*Configure GPIO pin : B1_Pin */
+  GPIO_InitStruct.Pin = B1_Pin;
   GPIO_InitStruct.Mode = GPIO_MODE_INPUT;
   GPIO_InitStruct.Pull = GPIO_NOPULL;
-  HAL_GPIO_Init(GPIOD, &GPIO_InitStruct);
+  HAL_GPIO_Init(B1_GPIO_Port, &GPIO_InitStruct);
 
   /* USER CODE BEGIN MX_GPIO_Init_2 */
 
@@ -547,6 +604,36 @@ static void MX_GPIO_Init(void)
 //         }
 //     }
 // }
+
+// task 4
+void HAL_TIM_IC_CaptureCallback(TIM_HandleTypeDef *htim)
+{
+    if (htim->Instance == TIM2 &&
+        htim->Channel == HAL_TIM_ACTIVE_CHANNEL_1)
+    {
+        current_capture = HAL_TIM_ReadCapturedValue(htim, TIM_CHANNEL_1);
+
+        if (first_capture)
+        {
+            last_capture = current_capture;
+            first_capture = 0;
+            return;
+        }
+
+        if (current_capture >= last_capture)
+        {
+            captured_ticks = current_capture - last_capture;
+        }
+        else
+        {
+            captured_ticks = (0xFFFFFFFFUL - last_capture) + current_capture + 1;
+        }
+
+        last_capture = current_capture;
+        new_capture_flag = 1; 
+    }
+}
+
 /* USER CODE END 4 */
 
 /**
