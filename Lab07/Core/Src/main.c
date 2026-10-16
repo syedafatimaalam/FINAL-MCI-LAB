@@ -19,10 +19,8 @@
 /* Includes ------------------------------------------------------------------*/
 #include "main.h"
 #include "usb_device.h"
-#include "arm_math.h"
-#include <stdio.h>
-#define ARM_MATH_CM4
-
+#include "arm_math.h" // Include CMSIS-DSP library for floating-point operations
+#include "stdio.h"    // Include standard I/O for sprintf
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
@@ -63,8 +61,8 @@ SPI_HandleTypeDef hspi1;
 UART_HandleTypeDef huart1;
 
 /* USER CODE BEGIN PV */
-volatile uint32_t raw_adc_value = 0;
-volatile uint8_t adc_flag = 0;
+// volatile uint32_t raw_adc_value = 0;
+// volatile uint8_t adc_flag = 0;
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -113,7 +111,7 @@ int main(void)
   /* MCU Configuration--------------------------------------------------------*/
 
   /* Reset of all peripherals, Initializes the Flash interface and the Systick. */
-HAL_Init();
+  HAL_Init();
 
   /* USER CODE BEGIN Init */
 
@@ -140,7 +138,7 @@ HAL_Init();
 
   //task 2
   //__HAL_ADC_CLEAR_FLAG(&hadc1, ADC_FLAG_EOC | ADC_FLAG_OVR);
-  HAL_ADC_Start_IT(&hadc1);
+  //HAL_ADC_Start_IT(&hadc1);
   /* USER CODE END 2 */
 
   /* Infinite loop */
@@ -166,24 +164,57 @@ HAL_Init();
     // HAL_Delay(150);
 
     //task 2
-    if (adc_flag == 1)
-    {
-        adc_flag = 0; // Clear the flag immediately
+    // if (adc_flag == 1)
+    // {
+    //     adc_flag = 0; // Clear the flag immediately
 
-        // Toggle LED to visually show data processing
-        HAL_GPIO_TogglePin(GPIOE, LD3_Pin);
+    //     // Toggle LED to visually show data processing
+    //     HAL_GPIO_TogglePin(GPIOE, LD3_Pin);
 
-        // Perform floating-point calculations and filtering here
-        float32_t sample = (float32_t)raw_adc_value;
-        float32_t filtered = apply_moving_average(sample);
+    //     // Perform floating-point calculations and filtering here
+    //     float32_t sample = (float32_t)raw_adc_value;
+    //     float32_t filtered = apply_moving_average(sample);
 
-        // Format and transmit over UART safely outside the ISR
-        int len = sprintf(uart_buf, "Raw: %.2f, Filtered: %.2f\r\n", sample, filtered);
-        HAL_UART_Transmit(&huart1, (uint8_t*)uart_buf, len, HAL_MAX_DELAY); // Blocking, safe from overwrites
-        HAL_Delay (1); // Optional delay to manage UART output rate
-      }
+    //     // Format and transmit over UART safely outside the ISR
+    //     int len = sprintf(uart_buf, "Raw: %.2f, Filtered: %.2f\r\n", sample, filtered);
+    //     HAL_UART_Transmit(&huart1, (uint8_t*)uart_buf, len, HAL_MAX_DELAY); // Blocking, safe from overwrites
+    //     HAL_Delay (1); // Optional delay to manage UART output rate
+    //   }
+
+    //POLLING
+
+
+  //   if (HAL_ADC_Start(&hadc1) == HAL_OK)
+  //   {
+  //       if (HAL_ADC_PollForConversion(&hadc1, 10) == HAL_OK)
+  //       {
+  //           // Read raw ADC value
+  //           uint32_t raw_val = HAL_ADC_GetValue(&hadc1);
+
+  //           // Apply moving average filter
+  //           float32_t sample = (float32_t)raw_val;
+
+  //           float32_t filtered = apply_moving_average(sample);
+
+  //           // Send raw and filtered values
+  //           int len = sprintf(uart_buf,
+  //                             "Raw: %.2f, Filtered: %.2f\r\n",
+  //                             sample, filtered);
+
+  //           HAL_UART_Transmit(&huart1,
+  //                             (uint8_t*)uart_buf,
+  //                             len,
+  //                             HAL_MAX_DELAY);
+  //       }
+
+  //       HAL_ADC_Stop(&hadc1);
+  //   }
+
+  //   HAL_Delay(1);
+  // }
+
   /* USER CODE END 3 */
-}}
+}
 
 /**
   * @brief System Clock Configuration
@@ -261,7 +292,7 @@ static void MX_ADC1_Init(void)
   hadc1.Init.ClockPrescaler = ADC_CLOCK_ASYNC_DIV1;
   hadc1.Init.Resolution = ADC_RESOLUTION_12B;
   hadc1.Init.ScanConvMode = ADC_SCAN_DISABLE;
-  hadc1.Init.ContinuousConvMode = ENABLE;
+  hadc1.Init.ContinuousConvMode = DISABLE;
   hadc1.Init.DiscontinuousConvMode = DISABLE;
   hadc1.Init.ExternalTrigConvEdge = ADC_EXTERNALTRIGCONVEDGE_NONE;
   hadc1.Init.ExternalTrigConv = ADC_SOFTWARE_START;
@@ -474,14 +505,16 @@ static void MX_GPIO_Init(void)
 }
 
 /* USER CODE BEGIN 4 */
-void HAL_ADC_ConvCpltCallback(ADC_HandleTypeDef* hadc) 
-{
-    if (hadc->Instance == ADC1) 
-    {
-        raw_adc_value = HAL_ADC_GetValue(hadc); // Grab the raw sample
-        adc_flag = 1;                           // Raise the flag for main loop
-    }
-}
+
+//INTERRUPT
+// void HAL_ADC_ConvCpltCallback(ADC_HandleTypeDef* hadc) 
+// {
+//     if (hadc->Instance == ADC1) 
+//     {
+//         raw_adc_value = HAL_ADC_GetValue(hadc); // Grab the raw sample
+//         adc_flag = 1;                           // Raise the flag for main loop
+//     }
+// }
 /* USER CODE END 4 */
 
 /**
