@@ -19,23 +19,42 @@
 /* Includes ------------------------------------------------------------------*/
 #include "main.h"
 #include "usb_device.h"
-#include "stdio.h"
-#include "string.h"
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
+
+#include <stdio.h>
+#include <string.h>
+#include <math.h>
 
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
 /* USER CODE BEGIN PTD */
 
+typedef struct {
+    float ax, ay, az;
+    float offset_x, offset_y, offset_z;
+    float roll, pitch;
+} LSM_Data;
+
 /* USER CODE END PTD */
 
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
-#define LSM303_ADDR   (0x19 << 1)
-#define WHO_AM_I_REG  0x0F
+
+//TASK 01
+// #define LSM303_ADDR   (0x19 << 1)
+// #define WHO_AM_I_REG  0x0F
+
+#define LSM303_ADDR  (0x19U << 1)
+#define WHO_AM_I_REG 0x0FU
+#define CTRL_REG1_A  0x20U
+#define CTRL_REG4_A  0x23U
+#define OUT_X_L_A    0x28U
+#define ACC_G_PER_LSB 0.004f
+#define RAD_TO_DEG 57.2957795f
+
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -52,6 +71,8 @@ UART_HandleTypeDef huart1;
 
 /* USER CODE BEGIN PV */
 
+static LSM_Data sensor = {0};
+
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -66,69 +87,83 @@ static void MX_USART1_UART_Init(void);
 
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
-// void LSM303_WhoAmI(void)
-// {
-//     uint8_t id = 0;
-//     char msg[100];
 
-//     HAL_StatusTypeDef status;
+  static HAL_StatusTypeDef Init_LSM(void)
+  {
+      uint8_t config = 0x67;  // 200 Hz, all axes enabled, normal mode
+      if (HAL_I2C_Mem_Write(&hi2c1, LSM303_ADDR, CTRL_REG1_A,
+                            I2C_MEMADD_SIZE_8BIT, &config, 1, 100) != HAL_OK)
+          return HAL_ERROR;
 
-//     status = HAL_I2C_Mem_Read(
-//         &hi2c1,
-//         LSM303_ADDR,
-//         WHO_AM_I_REG,
-//         I2C_MEMADD_SIZE_8BIT,
-//         &id,
-//         1,
-//         HAL_MAX_DELAY
-//     );
+      config = 0x00;         // +/-2g, normal resolution
+      if (HAL_I2C_Mem_Write(&hi2c1, LSM303_ADDR, CTRL_REG4_A,
+                            I2C_MEMADD_SIZE_8BIT, &config, 1, 100) != HAL_OK)
+          return HAL_ERROR;
 
-//     if (status == HAL_OK)
-//     {
-//         snprintf(msg, sizeof(msg),
-//                  "WHO_AM_I = 0x%02X\r\n", id);
+      HAL_Delay(50);
+      return HAL_OK;
+  }
 
-//         HAL_UART_Transmit(
-//             &huart1,
-//             (uint8_t *)msg,
-//             strlen(msg),
-//             HAL_MAX_DELAY
-//         );
+  static HAL_StatusTypeDef Read_LSM(LSM_Data *s)
+  {
+      uint8_t data[6];
+      // Bit 7 requests sequential register-address increment.
+      if (HAL_I2C_Mem_Read(&hi2c1, LSM303_ADDR, OUT_X_L_A | 0x80U,
+                          I2C_MEMADD_SIZE_8BIT, data, 6, 100) != HAL_OK)
+          return HAL_ERROR;
 
-//         if (id == 0x33)
-//         {
-//             char success[] = "LSM303DLHC Detected!\r\n";
+      int16_t raw_x = (int16_t)(((uint16_t)data[1] << 8) | data[0]);
+      int16_t raw_y = (int16_t)(((uint16_t)data[3] << 8) | data[2]);
+      int16_t raw_z = (int16_t)(((uint16_t)data[5] << 8) | data[4]);
 
-//             HAL_UART_Transmit(
-//                 &huart1,
-//                 (uint8_t *)success,
-//                 strlen(success),
-//                 HAL_MAX_DELAY
-//             );
-//         }
-//         else
-//         {
-//             char error[] = "Unexpected Sensor ID!\r\n";
+      // LSM303DLHC normal mode: signed 10-bit values left-aligned in 16 bits.
+      // Integer division by 64 is used to avoid implementation-specific right
+      // shifting of negative signed integers.
+      s->ax = (raw_x / 64) * ACC_G_PER_LSB - s->offset_x;
+      s->ay = (raw_y / 64) * ACC_G_PER_LSB - s->offset_y;
+      s->az = (raw_z / 64) * ACC_G_PER_LSB - s->offset_z;
 
-//             HAL_UART_Transmit(
-//                 &huart1,
-//                 (uint8_t *)error,
-//                 strlen(error),
-//                 HAL_MAX_DELAY
-//             );
-//         }
-//     }
-//     else
-//     {
-//         char error[] = "I2C Communication Failed!\r\n";
-//         HAL_UART_Transmit(
-//             &huart1,
-//             (uint8_t *)error,
-//             strlen(error),
-//             HAL_MAX_DELAY
-//         );
-//     }
-// }
+      s->roll = atan2f(s->ay, sqrtf(s->ax*s->ax + s->az*s->az)) * RAD_TO_DEG;
+      s->pitch = atan2f(-s->ax, sqrtf(s->ay*s->ay + s->az*s->az)) * RAD_TO_DEG;
+      return HAL_OK;
+  }
+
+  static HAL_StatusTypeDef Offset_LSM(LSM_Data *s)
+  {
+      float sx = 0, sy = 0, sz = 0;
+      const int samples = 20;
+      s->offset_x = s->offset_y = s->offset_z = 0.0f;
+
+      for (int i = 0; i < samples; ++i)
+      {
+          if (Read_LSM(s) != HAL_OK)
+              return HAL_ERROR;
+          sx += s->ax;
+          sy += s->ay;
+          sz += s->az;
+          HAL_Delay(20);
+      }
+      // Calibrate only while the board is flat and motionless.
+      s->offset_x = sx / samples;
+      s->offset_y = sy / samples;
+      float avg_z = sz / samples;
+      s->offset_z = avg_z - ((avg_z >= 0.0f) ? 1.0f : -1.0f);
+      return HAL_OK;
+  }
+
+  static void Print_LSM(const LSM_Data *s)
+  {
+      char msg[128];
+      int len = snprintf(msg, sizeof(msg), "%.3f  ,  %.3f  ,  %.3f  ,  %.2f ,  %.2f \r\n",
+                        s->ax, s->ay, s->az, s->roll, s->pitch);
+      if (len > 0)
+      {
+          if (len >= (int)sizeof(msg))
+              len = sizeof(msg) - 1;
+          HAL_UART_Transmit(&huart1, (uint8_t *)msg, (uint16_t)len, 100);
+      }
+  }
+
 /* USER CODE END 0 */
 
 /**
@@ -164,87 +199,53 @@ int main(void)
   MX_SPI1_Init();
   MX_USART1_UART_Init();
   MX_USB_DEVICE_Init();
-  
-  /* USER CODE BEGIN 2 */
 
   /* USER CODE BEGIN 2 */
 
-HAL_Delay(100);
+  HAL_Delay(500);
 
-/* USER CODE END 2 */
-
-// uint8_t id = 0;
-// char msg[100];
-
-// HAL_StatusTypeDef status;
-
-// status = HAL_I2C_IsDeviceReady(
-//     &hi2c1,
-//     LSM303_ADDR,
-//     3,
-//     100
-// );
-
-// if (status == HAL_OK)
-// {
-//     status = HAL_I2C_Mem_Read(
-//         &hi2c1,
-//         LSM303_ADDR,
-//         WHO_AM_I_REG,
-//         I2C_MEMADD_SIZE_8BIT,
-//         &id,
-//         1,
-//         100
-//     );
-
-//     if (status == HAL_OK)
-//     {
-//         snprintf(msg, sizeof(msg),
-//                  "WHO_AM_I = 0x%02X\r\n", id);
-
-//         HAL_UART_Transmit(
-//             &huart1,
-//             (uint8_t *)msg,
-//             strlen(msg),
-//             100
-//         );
-//     }
-//     else
-//     {
-//         char error[] = "I2C READ FAILED!\r\n";
-
-//         HAL_UART_Transmit(
-//             &huart1,
-//             (uint8_t *)error,
-//             strlen(error),
-//             100
-//         );
-//     }
-// }
-// else
-// {
-//     char error[] = "I2C DEVICE NOT FOUND!\r\n";
-
-//     HAL_UART_Transmit(
-//         &huart1,
-//         (uint8_t *)error,
-//         strlen(error),
-//         100
-//     );
-// }
+// Task 1 disabled
+// LSM303_WhoAmI();
 
 
-  // HAL_Delay(100);
-  // LSM303_WhoAmI();
+  // TASK 02
+  uint8_t id = 0;
+  if (HAL_I2C_Mem_Read(&hi2c1, LSM303_ADDR, WHO_AM_I_REG,
+                     I2C_MEMADD_SIZE_8BIT, &id, 1, 100) != HAL_OK || id != 0x33)
+{
+    const char msg[] = "LSM WHO_AM_I FAILED\r\n";
+    HAL_UART_Transmit(&huart1, (uint8_t *)msg, sizeof(msg)-1, 100);
+    Error_Handler();
+}
 
-// char msg[] = "UART WORKING!\r\n";
+  if (Init_LSM() != HAL_OK)
+  {
+      const char msg[] = "LSM INIT FAILED\r\n";
 
-// HAL_UART_Transmit(
-//     &huart1,
-//     (uint8_t *)msg,
-//     strlen(msg),
-//     100
-// );
+      HAL_UART_Transmit(
+          &huart1,
+          (uint8_t *)msg,
+          sizeof(msg) - 1,
+          100
+      );
+
+      Error_Handler();
+  }
+
+  if (Offset_LSM(&sensor) != HAL_OK)
+  {
+    const char msg[] = "LSM CALIBRATION FAILED\r\n";
+
+    HAL_UART_Transmit(
+        &huart1,
+        (uint8_t *)msg,
+        sizeof(msg) - 1,
+        100
+    );
+
+    Error_Handler();
+  }
+
   /* USER CODE END 2 */
 
   /* Infinite loop */
@@ -252,90 +253,97 @@ HAL_Delay(100);
   while (1)
   {
     /* USER CODE END WHILE */
+
     /* USER CODE BEGIN 3 */
-    static uint8_t printed = 0;
-    if (printed == 0 && HAL_GetTick() >= 2000)
+
+    //TASK 01
+    // static uint8_t printed = 0;
+    // if (printed == 0 && HAL_GetTick() >= 2000)
+    // {
+    //     uint8_t id = 0;
+    //     char msg[100];
+    //     HAL_StatusTypeDef status;
+    //     status = HAL_I2C_IsDeviceReady(&hi2c1,LSM303_ADDR,3,
+    //         100
+    //     );
+
+    //     if (status == HAL_OK)
+    //     {
+    //         status = HAL_I2C_Mem_Read(&hi2c1,LSM303_ADDR,
+    //             WHO_AM_I_REG,
+    //             I2C_MEMADD_SIZE_8BIT,
+    //             &id,
+    //             1,
+    //             100
+    //         );
+
+    //         if (status == HAL_OK)
+    //         {
+    //             snprintf(
+    //                 msg,
+    //                 sizeof(msg),
+    //                 "WHO_AM_I = 0x%02X\r\n",
+    //                 id
+    //             );
+
+    //             HAL_UART_Transmit(
+    //                 &huart1,
+    //                 (uint8_t *)msg,
+    //                 strlen(msg),
+    //                 100
+    //             );
+    //         }
+    //         else
+    //         {
+    //             char error[] = "I2C READ FAILED!\r\n";
+
+    //             HAL_UART_Transmit(
+    //                 &huart1,
+    //                 (uint8_t *)error,
+    //                 strlen(error),
+    //                 100
+    //             );
+    //         }
+    //     }
+    //     else
+    //     {
+    //         char error[] = "I2C DEVICE NOT FOUND!\r\n";
+
+    //         HAL_UART_Transmit(
+    //             &huart1,
+    //             (uint8_t *)error,
+    //             strlen(error),
+    //             100
+    //         );
+    //     }
+
+    //     printed = 1;
+    // }
+
+    // HAL_Delay(100);
+
+
+  //TASK 2
+  if (Read_LSM(&sensor) == HAL_OK)
     {
-        uint8_t id = 0;
-        char msg[100];
-        HAL_StatusTypeDef status;
-        status = HAL_I2C_IsDeviceReady(&hi2c1,LSM303_ADDR,3,
+        Print_LSM(&sensor);
+    }
+    else
+    {
+        const char msg[] = "LSM READ FAILED\r\n";
+
+        HAL_UART_Transmit(
+            &huart1,
+            (uint8_t *)msg,
+            sizeof(msg) - 1,
             100
         );
-
-        if (status == HAL_OK)
-        {
-            status = HAL_I2C_Mem_Read(&hi2c1,LSM303_ADDR,
-                WHO_AM_I_REG,
-                I2C_MEMADD_SIZE_8BIT,
-                &id,
-                1,
-                100
-            );
-
-            if (status == HAL_OK)
-            {
-                snprintf(
-                    msg,
-                    sizeof(msg),
-                    "WHO_AM_I = 0x%02X\r\n",
-                    id
-                );
-
-                HAL_UART_Transmit(
-                    &huart1,
-                    (uint8_t *)msg,
-                    strlen(msg),
-                    100
-                );
-            }
-            else
-            {
-                char error[] = "I2C READ FAILED!\r\n";
-
-                HAL_UART_Transmit(
-                    &huart1,
-                    (uint8_t *)error,
-                    strlen(error),
-                    100
-                );
-            }
-        }
-        else
-        {
-            char error[] = "I2C DEVICE NOT FOUND!\r\n";
-
-            HAL_UART_Transmit(
-                &huart1,
-                (uint8_t *)error,
-                strlen(error),
-                100
-            );
-        }
-
-        printed = 1;
     }
 
     HAL_Delay(100);
-}
 
-/* USER CODE END 3 */
-  //char test[] = "HELLO FROM STM32\r\n";
-
-  // HAL_UART_Transmit(
-  //     &huart1,
-  //     (uint8_t *)test,
-  //     strlen(test),
-  //     1000
-  // );
-
-  //HAL_Delay(1000);
-
-
-
-/* USER CODE END 3 */
-
-}
+  /* USER CODE END 3 */
+}}
 
 /**
   * @brief System Clock Configuration
