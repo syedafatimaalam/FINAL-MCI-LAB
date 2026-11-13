@@ -55,6 +55,16 @@ typedef struct {
 #define GYRO_SENSITIVITY 0.00875f
 #define LOOP_PERIOD_MS 10U
 #define FILTER_ALPHA 0.98f
+
+// ===== PD CONTROLLER =====
+#define KP 30.0f
+#define KD 0.5f
+
+#define MAX_PWM 350
+#define MIN_PWM 0
+
+#define ANGLE_DEADBAND 0.5f
+#define SAFETY_ANGLE 25.0f
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -68,6 +78,7 @@ I2C_HandleTypeDef hi2c1;
 SPI_HandleTypeDef hspi1;
 
 TIM_HandleTypeDef htim2;
+TIM_HandleTypeDef htim4;
 
 UART_HandleTypeDef huart1;
 
@@ -80,7 +91,8 @@ static float filtered_angle = 0.0f;
 static float acc_angle = 0.0f;
 static char uart_buf[128];
 static float gyro_y_bias = 0.0f;
-
+static float target_angle = 0.0f;
+static int16_t motor_pwm = 0;
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -90,6 +102,7 @@ static void MX_I2C1_Init(void);
 static void MX_SPI1_Init(void);
 static void MX_TIM2_Init(void);
 static void MX_USART1_UART_Init(void);
+static void MX_TIM4_Init(void);
 /* USER CODE BEGIN PFP */
 
 /* USER CODE END PFP */
@@ -270,16 +283,41 @@ static HAL_StatusTypeDef calibrate_gyro_y(void)
 }
 
 
+// static void print_angles(void)
+// {
+//     int n = snprintf(
+//         uart_buf,
+//         sizeof(uart_buf),
+//         "%.2f,%.2f,%.2f\r\n",
+//         (double)acc_angle,
+//         (double)gyro_angle,
+//         (double)filtered_angle
+//     );
+
+//     if (n > 0 && n < (int)sizeof(uart_buf))
+//     {
+//         HAL_UART_Transmit(
+//             &huart1,
+//             (uint8_t *)uart_buf,
+//             (uint16_t)n,
+//             100
+//         );
+//     }
+// }
+
 static void print_angles(void)
 {
+    float gy = -(y_dps - gyro_y_bias);
+
     int n = snprintf(
-        uart_buf,
-        sizeof(uart_buf),
-        "%.2f,%.2f,%.2f\r\n",
-        (double)acc_angle,
-        (double)gyro_angle,
-        (double)filtered_angle
-    );
+    uart_buf,
+    sizeof(uart_buf),
+    "Target: %.2f | Angle: %.2f | Gyro: %.2f | PWM: %d\r\n",
+    (double)target_angle,
+    (double)filtered_angle,
+    (double)gy,
+    (int)motor_pwm
+);
 
     if (n > 0 && n < (int)sizeof(uart_buf))
     {
@@ -290,6 +328,53 @@ static void print_angles(void)
             100
         );
     }
+}
+
+void Motor_Control(int16_t pwm)
+{
+    // Limit PWM
+    if (pwm > MAX_PWM)
+        pwm = MAX_PWM;
+
+    if (pwm < -MAX_PWM)
+        pwm = -MAX_PWM;
+
+    // Stop motors
+    if (pwm == 0)
+    {
+        __HAL_TIM_SET_COMPARE(&htim4, TIM_CHANNEL_3, 0);
+        __HAL_TIM_SET_COMPARE(&htim4, TIM_CHANNEL_4, 0);
+
+        HAL_GPIO_WritePin(GPIOB,
+                          GPIO_PIN_0 | GPIO_PIN_1 |
+                          GPIO_PIN_10 | GPIO_PIN_11,
+                          GPIO_PIN_RESET);
+        return;
+    }
+
+    // Forward
+    if (pwm > 0)
+    {
+        HAL_GPIO_WritePin(GPIOB, GPIO_PIN_0, GPIO_PIN_SET);
+        HAL_GPIO_WritePin(GPIOB, GPIO_PIN_1, GPIO_PIN_RESET);
+
+        HAL_GPIO_WritePin(GPIOB, GPIO_PIN_10, GPIO_PIN_SET);
+        HAL_GPIO_WritePin(GPIOB, GPIO_PIN_11, GPIO_PIN_RESET);
+    }
+    // Backward
+    else
+    {
+        HAL_GPIO_WritePin(GPIOB, GPIO_PIN_0, GPIO_PIN_RESET);
+        HAL_GPIO_WritePin(GPIOB, GPIO_PIN_1, GPIO_PIN_SET);
+
+        HAL_GPIO_WritePin(GPIOB, GPIO_PIN_10, GPIO_PIN_RESET);
+        HAL_GPIO_WritePin(GPIOB, GPIO_PIN_11, GPIO_PIN_SET);
+
+        pwm = -pwm;
+    }
+
+    __HAL_TIM_SET_COMPARE(&htim4, TIM_CHANNEL_3, pwm);
+    __HAL_TIM_SET_COMPARE(&htim4, TIM_CHANNEL_4, pwm);
 }
 
 /* USER CODE END 0 */
@@ -328,6 +413,7 @@ int main(void)
   MX_TIM2_Init();
   MX_USB_DEVICE_Init();
   MX_USART1_UART_Init();
+  MX_TIM4_Init();
   /* USER CODE BEGIN 2 */
 HAL_Delay(100);
 
@@ -361,11 +447,10 @@ if (gyro_write_register(GYRO_CTRL_REG1, 0x8F) != HAL_OK)
 
 HAL_Delay(100);
 
-// Keep board stationary during calibration
-if (Offset_LSM(&sensor) != HAL_OK)
-{
-    Error_Handler();
-}
+// Temporary: skip flat-board accelerometer offset calibration
+sensor.offset_x = 0.0f;
+sensor.offset_y = 0.0f;
+sensor.offset_z = 0.0f;
 
 if (calibrate_gyro_y() != HAL_OK)
 {
@@ -383,12 +468,44 @@ acc_angle = sensor.pitch;
 filtered_angle = acc_angle;
 gyro_angle = acc_angle;
 
+// ===== AUTOMATIC UPRIGHT REFERENCE =====
+// Robot must be upright and stationary during startup.
+
+// ===== AUTOMATIC TARGET ANGLE CALIBRATION =====
+float angle_sum = 0.0f;
+
+for (int i = 0; i < 100; i++)
+{
+    if (Read_LSM(&sensor) != HAL_OK)
+    {
+        Error_Handler();
+    }
+
+    angle_sum += sensor.pitch;
+
+    HAL_Delay(10);
+}
+
+target_angle = angle_sum / 100.0f;
+
+// Initialize filter at the reference angle
+acc_angle = target_angle;
+filtered_angle = target_angle;
+gyro_angle = target_angle;
+
 // Sampling variables
 uint32_t last_sample_ms = HAL_GetTick();
 uint32_t next_sample_ms = last_sample_ms + LOOP_PERIOD_MS;
 
 unsigned print_counter = 0;
-  /* USER CODE END 2 */
+
+HAL_TIM_PWM_Start(&htim4, TIM_CHANNEL_3);
+HAL_TIM_PWM_Start(&htim4, TIM_CHANNEL_4);
+
+motor_pwm = 0;
+Motor_Control(0);
+
+/* USER CODE END 2 */
 
   /* Infinite loop */
   /* USER CODE BEGIN WHILE */
@@ -425,12 +542,9 @@ unsigned print_counter = 0;
 
         // Remove gyroscope bias
         float gy = -(y_dps - gyro_y_bias);
+        gyro_angle += gy * dt;
 
-      gyro_angle += gy * dt;
-
-      filtered_angle =
-          FILTER_ALPHA * (filtered_angle + gy * dt)
-          + (1.0f - FILTER_ALPHA) * acc_angle;
+        filtered_angle = FILTER_ALPHA * (filtered_angle + gy * dt)+ (1.0f - FILTER_ALPHA) * acc_angle;
 
         // Print every 10 samples
         if (++print_counter >= 10U)
@@ -438,7 +552,44 @@ unsigned print_counter = 0;
             print_counter = 0;
             print_angles();
         }
-    }
+
+// ===== PD BALANCING CONTROLLER =====
+
+float error = target_angle - filtered_angle;
+float control = KP * error - KD * gy;
+
+if (fabsf(error) > SAFETY_ANGLE ||
+    fabsf(error) < ANGLE_DEADBAND)
+{
+    motor_pwm = 0;
+    Motor_Control(0);
+}
+else
+{
+    int16_t pwm = (int16_t)control;
+
+    // Limit maximum PWM
+    if (pwm > MAX_PWM)  pwm = MAX_PWM;
+    if (pwm < -MAX_PWM) pwm = -MAX_PWM;
+
+    // Minimum effective PWM
+    if (pwm > 0 && pwm < 300)
+        pwm = 300;
+    else if (pwm < 0 && pwm > -300)
+        pwm = -300;
+
+    // Keep the sign that passed your direction test
+    //motor_pwm = -pwm;
+Motor_Control(pwm);
+}
+
+// ===== MOTOR PWM TEST =====
+
+// Motor_Control(300);
+// HAL_Delay(1000);
+
+// Motor_Control(0);
+// HAL_Delay(2000);
   }
     // if (gyro_read_xyz() == HAL_OK)
     // {
@@ -476,9 +627,10 @@ unsigned print_counter = 0;
     // );
 
     // HAL_Delay(500);
+
 }
   /* USER CODE END 3 */
-
+}
 
 /**
   * @brief System Clock Configuration
@@ -637,7 +789,7 @@ static void MX_TIM2_Init(void)
 
   /* USER CODE END TIM2_Init 1 */
   htim2.Instance = TIM2;
-  htim2.Init.Prescaler = 71;
+  htim2.Init.Prescaler = 47;
   htim2.Init.CounterMode = TIM_COUNTERMODE_UP;
   htim2.Init.Period = 9999;
   htim2.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
@@ -660,6 +812,59 @@ static void MX_TIM2_Init(void)
   /* USER CODE BEGIN TIM2_Init 2 */
 
   /* USER CODE END TIM2_Init 2 */
+
+}
+
+/**
+  * @brief TIM4 Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_TIM4_Init(void)
+{
+
+  /* USER CODE BEGIN TIM4_Init 0 */
+
+  /* USER CODE END TIM4_Init 0 */
+
+  TIM_MasterConfigTypeDef sMasterConfig = {0};
+  TIM_OC_InitTypeDef sConfigOC = {0};
+
+  /* USER CODE BEGIN TIM4_Init 1 */
+
+  /* USER CODE END TIM4_Init 1 */
+  htim4.Instance = TIM4;
+  htim4.Init.Prescaler = 47;
+  htim4.Init.CounterMode = TIM_COUNTERMODE_UP;
+  htim4.Init.Period = 999;
+  htim4.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
+  htim4.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
+  if (HAL_TIM_PWM_Init(&htim4) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  sMasterConfig.MasterOutputTrigger = TIM_TRGO_RESET;
+  sMasterConfig.MasterSlaveMode = TIM_MASTERSLAVEMODE_DISABLE;
+  if (HAL_TIMEx_MasterConfigSynchronization(&htim4, &sMasterConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  sConfigOC.OCMode = TIM_OCMODE_PWM1;
+  sConfigOC.Pulse = 0;
+  sConfigOC.OCPolarity = TIM_OCPOLARITY_HIGH;
+  sConfigOC.OCFastMode = TIM_OCFAST_DISABLE;
+  if (HAL_TIM_PWM_ConfigChannel(&htim4, &sConfigOC, TIM_CHANNEL_3) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  if (HAL_TIM_PWM_ConfigChannel(&htim4, &sConfigOC, TIM_CHANNEL_4) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN TIM4_Init 2 */
+
+  /* USER CODE END TIM4_Init 2 */
+  HAL_TIM_MspPostInit(&htim4);
 
 }
 
@@ -721,6 +926,9 @@ static void MX_GPIO_Init(void)
   HAL_GPIO_WritePin(GYRO_CS_GPIO_Port, GYRO_CS_Pin, GPIO_PIN_SET);
 
   /*Configure GPIO pin Output Level */
+  HAL_GPIO_WritePin(GPIOB, GPIO_PIN_0|GPIO_PIN_1|GPIO_PIN_10|GPIO_PIN_11, GPIO_PIN_RESET);
+
+  /*Configure GPIO pin Output Level */
   HAL_GPIO_WritePin(GPIOE, LD4_Pin|LD3_Pin|LD5_Pin|LD7_Pin
                           |LD9_Pin|LD10_Pin|LD8_Pin|LD6_Pin, GPIO_PIN_RESET);
 
@@ -749,6 +957,13 @@ static void MX_GPIO_Init(void)
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   HAL_GPIO_Init(B1_GPIO_Port, &GPIO_InitStruct);
 
+  /*Configure GPIO pins : PB0 PB1 PB10 PB11 */
+  GPIO_InitStruct.Pin = GPIO_PIN_0|GPIO_PIN_1|GPIO_PIN_10|GPIO_PIN_11;
+  GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
+  GPIO_InitStruct.Pull = GPIO_NOPULL;
+  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
+  HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
+
   /* USER CODE BEGIN MX_GPIO_Init_2 */
 
   /* USER CODE END MX_GPIO_Init_2 */
@@ -765,11 +980,23 @@ static void MX_GPIO_Init(void)
 void Error_Handler(void)
 {
   /* USER CODE BEGIN Error_Handler_Debug */
-  /* User can add his own implementation to report the HAL error return state */
+
+  // Stop both motors
+  __HAL_TIM_SET_COMPARE(&htim4, TIM_CHANNEL_3, 0);
+  __HAL_TIM_SET_COMPARE(&htim4, TIM_CHANNEL_4, 0);
+
+  // Set all motor direction pins LOW
+  HAL_GPIO_WritePin(GPIOB,
+      GPIO_PIN_0 | GPIO_PIN_1 |
+      GPIO_PIN_10 | GPIO_PIN_11,
+      GPIO_PIN_RESET);
+
   __disable_irq();
+
   while (1)
   {
   }
+
   /* USER CODE END Error_Handler_Debug */
 }
 #ifdef USE_FULL_ASSERT
